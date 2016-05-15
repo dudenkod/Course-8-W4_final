@@ -1,0 +1,170 @@
+---
+title: "Prediction Assignment Writeup"
+author: "Dmytro Dudenko"
+date: "6. Mai 2016"
+output: html_document
+---
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.width=5, fig.height=5,
+                      echo=FALSE, warning=FALSE, message=FALSE)
+
+```
+You can also embed plots, for example:
+
+```{r cache=TRUE}
+library(doParallel); library(parallel)
+cores=detectCores()
+clust = makeCluster(cores)
+registerDoParallel(clust)
+library(caret); library(kernlab); library(ISLR); library(RANN);
+library(DMwR);library(MASS); library(randomForest); library(e1071)
+
+
+train = read.csv(file="pml-training.csv", header = TRUE,  sep = ',')
+test = read.csv(file="pml-testing.csv", header = TRUE,  sep = ',')
+summary(train)
+str(train)
+
+summary(test)
+str(test)
+```
+
+Cleaning data
+
+```{r cache=TRUE}
+
+train_clean = read.csv(file="pml-training.csv", na.strings =c("NA", "", "#DIV/0!"), header = TRUE,  sep = ',')
+test_clean = read.csv(file="pml-testing.csv", na.strings=c("NA", "", "#DIV/0!"), header = TRUE, sep = ',')
+
+
+train_clean$cvtd_timestamp = strptime(train_clean$cvtd_timestamp, "%d/%m/%Y %H:%M")
+test_clean$cvtd_timestamp = strptime(test_clean$cvtd_timestamp, "%d/%m/%Y %H:%M")
+train_clean$cvtd_timestamp = as.Date(train_clean$cvtd_timestamp)
+test_clean$cvtd_timestamp = as.Date(test_clean$cvtd_timestamp)
+
+summary(train_clean)
+str(train_clean)
+summary(test_clean)
+str(test_clean)
+
+
+```
+
+```{r, echo=FALSE, cache=TRUE}
+
+
+train_caret = train_clean
+test_caret = test_clean
+
+nearzero <- nearZeroVar(train_caret, saveMetrics = TRUE)
+nearzero
+train_caret <- train_caret[, !nearzero$nzv]
+
+str(train_caret)
+
+NA_cleanup_train =  sapply(colnames(train_caret), function(x) if(sum(is.na(train_caret[,x])) > 0.50*nrow(train_caret)) {return(TRUE)}else{return(FALSE)})
+
+NA_cleanup_test =  sapply(colnames(test_caret), function(x) if(sum(is.na(test_caret[,x])) > 0.50*nrow(test_caret)) {return(TRUE)}else{return(FALSE)})
+
+
+train_caret = train_caret[,!NA_cleanup_train]
+test_caret = test_caret[,!NA_cleanup_test]
+
+
+str(train_caret)
+summary(train_caret)
+str(test_caret)
+summary(test_caret)
+
+#train_caret= knnImputation(train_caret)
+
+#test_caret = knnImputation(test_caret)
+
+#train_caret = train_caret[complete.cases(train_caret),]
+
+str(train_caret)
+summary(train_caret)
+
+table(train_caret$classe)
+
+Hcorr <- findCorrelation(cor(train_caret[, -c(2,5,59)]), cutoff=0.5)
+Hcorr
+str(train_caret[,-Hcorr])
+names(train_caret)[Hcorr]
+
+train_caret_final = train_caret[, -c(2,5,59)][,-Hcorr]
+train_caret_final = cbind(train_caret_final, train_caret[, c(2,5,59)])
+str(train_caret_final)
+
+str(test_caret)
+test_caret_final = test_caret[, -c(2,5,59)][,-Hcorr]
+test_caret_final = cbind(test_caret_final, test_caret[, c(2,5,59)])
+
+table(train_caret_final$classe)
+
+reduced_Ti = createDataPartition(y=train_caret_final$classe, p=0.1, list = FALSE)
+
+table(train_caret_final[reduced_Ti,]$classe)
+
+inTrain = createDataPartition(y=train_caret_final[reduced_Ti,]$classe, p=0.75, list = FALSE)
+
+Train_FINAL = train_caret_final[reduced_Ti,][inTrain,]
+Test_FINAL = train_caret_final[reduced_Ti,][-inTrain,]
+
+table(Train_FINAL$classe)
+table(Test_FINAL$classe)
+
+dim(Train_FINAL)
+
+control <- rfeControl(functions=rfFuncs, method="cv", number=10)
+# run the RFE algorithm
+results <- rfe(Train_FINAL[,-c(27)], Train_FINAL[,27], sizes=c(1:10), rfeControl=control)
+# summarize the results
+print(results)
+# list the chosen features
+predictors(results)
+# plot the results
+
+plot(results, type=c("g", "o"))
+
+
+
+#train_nsv = nearZeroVar(train_caret, saveMetrics = TRUE)
+#train_nsv
+
+control <- trainControl(method="cv", number=10, repeats=5)
+str(Train_FINAL)
+model_RF = train(classe~., data=Train_FINAL, method="rf", preProcess="range", trControl=control, tuneGrid = expand.grid(.mtry = c(2:6)),  n.tree=200, maxit=2000)
+
+importance <- varImp(model_RF, scale=FALSE)
+# summarize importance
+print(importance)
+plot(importance)
+
+PREDICTION = predict(model_RF, newdata=Test_FINAL[,-c(27)])
+confusionMatrix(PREDICTION,Test_FINAL[,27])
+
+dim(test_caret)
+str(test_caret)
+PREDICTION_COURSE = predict(model_RF, newdata=test_caret)
+summary(PREDICTION_COURSE)
+
+model_RF_noX = train(classe~., data=Train_FINAL[,-c(1)], method="rf", preProcess="range", trControl=control, tuneGrid = expand.grid(.mtry = c(2:6)),  n.tree=200, maxit=2000)
+
+
+qplot(train_caret$num_window, colour=train_caret$classe)
+
+library("ggvis")
+train_caret %>% ggvis(~num_window, ~classe,  fill = ~classe) %>% layer_points()
+
+#featurePlot(x=train_caret, y=train_caret$classe, plot="pairs")
+
+ #B A B A A E D B A A B C B A E E A B B B
+
+```
+
